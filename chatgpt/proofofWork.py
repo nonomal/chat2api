@@ -1,6 +1,7 @@
 import hashlib
 import json
 import random
+import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -9,10 +10,9 @@ from html.parser import HTMLParser
 import pybase64
 
 from utils.Logger import logger
-from utils.config import conversation_only
+from utils.configs import conversation_only
 
-cores = [16, 24, 32]
-screens = [3000, 4000, 6000]
+cores = [8, 16, 24, 32]
 timeLayout = "%a %b %d %Y %H:%M:%S"
 
 cached_scripts = []
@@ -26,7 +26,6 @@ navigator_key = [
     "locks−[object LockManager]",
     "appCodeName−Mozilla",
     "permissions−[object Permissions]",
-    "appVersion−5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0",
     "share−function share() { [native code] }",
     "webdriver−false",
     "managed−[object NavigatorManagedData]",
@@ -55,9 +54,7 @@ navigator_key = [
     "login−[object NavigatorLogin]",
     "vendorSub−",
     "login−[object NavigatorLogin]",
-    "userAgent−Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0",
     "getInstalledRelatedApps−function getInstalledRelatedApps() { [native code] }",
-    "userAgent−Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0",
     "mediaDevices−[object MediaDevices]",
     "locks−[object LockManager]",
     "webkitGetUserMedia−function webkitGetUserMedia() { [native code] }",
@@ -65,7 +62,6 @@ navigator_key = [
     "xr−[object XRSystem]",
     "mediaDevices−[object MediaDevices]",
     "virtualKeyboard−[object VirtualKeyboard]",
-    "userAgent−Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0",
     "virtualKeyboard−[object VirtualKeyboard]",
     "appName−Netscape",
     "storageBuckets−[object StorageBucketManager]",
@@ -103,10 +99,8 @@ navigator_key = [
     "getUserMedia−function getUserMedia() { [native code] }",
     "mediaDevices−[object MediaDevices]",
     "webkitPersistentStorage−[object DeprecatedStorageQuota]",
-    "userAgent−Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0",
     "sendBeacon−function sendBeacon() { [native code] }",
     "hardwareConcurrency−32",
-    "appVersion−5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0",
     "credentials−[object CredentialsContainer]",
     "storage−[object StorageManager]",
     "cookieEnabled−true",
@@ -116,7 +110,6 @@ navigator_key = [
     "pdfViewerEnabled−true",
     "hardwareConcurrency−32",
     "xr−[object XRSystem]",
-    "userAgent−Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0",
     "webdriver−false",
     "getInstalledRelatedApps−function getInstalledRelatedApps() { [native code] }",
     "getInstalledRelatedApps−function getInstalledRelatedApps() { [native code] }",
@@ -386,10 +379,26 @@ class ScriptSrcParser(HTMLParser):
             attrs_dict = dict(attrs)
             if "src" in attrs_dict:
                 src = attrs_dict["src"]
-                if "dpl" in src:
-                    cached_scripts.append(src)
-                    cached_dpl = src[src.index("dpl"):]
+                cached_scripts.append(src)
+                match = re.search(r"c/[^/]*/_", src)
+                if match:
+                    cached_dpl = match.group(0)
                     cached_time = int(time.time())
+
+
+def get_data_build_from_html(html_content):
+    global cached_scripts, cached_dpl, cached_time
+    parser = ScriptSrcParser()
+    parser.feed(html_content)
+    if not cached_scripts:
+        cached_scripts.append("https://chatgpt.com/backend-api/sentinel/sdk.js")
+    if not cached_dpl:
+        match = re.search(r'<html[^>]*data-build="([^"]*)"', html_content)
+        if match:
+            data_build = match.group(1)
+            cached_dpl = data_build
+            cached_time = int(time.time())
+            logger.info(f"Found dpl: {cached_dpl}")
 
 
 async def get_dpl(service):
@@ -397,22 +406,21 @@ async def get_dpl(service):
     if int(time.time()) - cached_time < 15 * 60:
         return True
     headers = service.base_headers.copy()
-    cached_scripts.clear()
+    cached_scripts = []
+    cached_dpl = ""
     try:
         if conversation_only:
             return True
-        r = await service.s.get(f"{service.host_url}/?oai-dm=1", headers=headers, timeout=5)
+        r = await service.s.get(f"{service.host_url}/", headers=headers, timeout=5)
         r.raise_for_status()
-        parser = ScriptSrcParser()
-        parser.feed(r.text)
-        if len(cached_scripts) == 0:
-            raise Exception("No scripts found")
+        get_data_build_from_html(r.text)
+        if not cached_dpl:
+            raise Exception("No Cached DPL")
         else:
             return True
-    except Exception:
-        cached_scripts.append(
-            "https://cdn.oaistatic.com/_next/static/cXh69klOLzS0Gy2joLDRS/_ssgManifest.js?dpl=453ebaec0d44c2decab71692e1bfe39be35a24b3")
-        cached_dpl = "453ebaec0d44c2decab71692e1bfe39be35a24b3"
+    except Exception as e:
+        logger.info(f"Failed to get dpl: {e}")
+        cached_dpl = None
         cached_time = int(time.time())
         return False
 
@@ -423,15 +431,13 @@ def get_parse_time():
 
 
 def get_config(user_agent):
-    core = random.choice(cores)
-    screen = random.choice(screens)
     config = [
-        core + screen,
+        random.randint(1080, 1440+1080),
         get_parse_time(),
         4294705152,
         0,
         user_agent,
-        random.choice(cached_scripts),
+        random.choice(cached_scripts) if cached_scripts else "",
         cached_dpl,
         "en-US",
         "en-US,es-US,en,es",
@@ -439,8 +445,11 @@ def get_config(user_agent):
         random.choice(navigator_key),
         random.choice(document_key),
         random.choice(window_key),
-        time.perf_counter(),
+        time.perf_counter() * 1000,
         str(uuid.uuid4()),
+        "",
+        random.choice(cores),
+        time.time() * 1000 - (time.perf_counter() * 1000),
     ]
     return config
 
@@ -491,6 +500,6 @@ if __name__ == "__main__":
     #     answer = get_answer_token(seed, diff, config)
     cached_scripts.append(
         "https://cdn.oaistatic.com/_next/static/cXh69klOLzS0Gy2joLDRS/_ssgManifest.js?dpl=453ebaec0d44c2decab71692e1bfe39be35a24b3")
-    cached_dpl = "dpl=453ebaec0d44c2decab71692e1bfe39be35a24b3"
-    config = get_config("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome")
+    cached_dpl = "prod-f501fe933b3edf57aea882da888e1a544df99840"
+    config = get_config("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36")
     get_requirements_token(config)
